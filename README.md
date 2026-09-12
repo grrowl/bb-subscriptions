@@ -35,7 +35,8 @@ No separate API token setup is needed. Provider commands only make read queries.
 Optional settings:
 
 ```sh
-# Enables bare PR numbers, e.g. subscribe github 123 124
+# Enables bare PR numbers outside a project thread, e.g. subscribe github 123 124.
+# In a project thread, this is inferred from its GitHub remote automatically.
 bb plugin config subscriptions set githubRepository owner/repo
 # Selects an authenticated Linear workspace; otherwise uses the CLI default
 bb plugin config subscriptions set linearWorkspace workspace-slug

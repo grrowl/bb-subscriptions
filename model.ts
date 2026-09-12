@@ -17,13 +17,20 @@ export function canonical(platform: Platform, raw: string, repo = ''): string {
     const url = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9]\d*)(?:[/?#].*)?$/.exec(id);
     if (url) id = `${url[1]}#${url[2]}`;
     if (/^#?[1-9]\d*$/.test(id)) id = `${repo}#${id.replace('#', '')}`;
-    if (!/^[\w.-]+\/[\w.-]+#[1-9]\d*$/.test(id)) throw new Error('Use owner/repo#123 or a GitHub PR URL. Set githubRepository to use bare numbers.');
+    if (!/^[\w.-]+\/[\w.-]+#[1-9]\d*$/.test(id)) throw new Error('Use owner/repo#123 or a GitHub PR URL. Bare numbers work automatically in a project with a GitHub remote; otherwise set githubRepository.');
     return id.toLowerCase();
   }
   const url = /^https:\/\/linear\.app\/[^/]+\/issue\/([a-z0-9]+-[1-9]\d*)(?:[/?#].*)?$/i.exec(id);
   if (url) id = url[1];
   if (!/^[a-z][a-z0-9]*-[1-9]\d*$/i.test(id)) throw new Error('Use a Linear issue ID such as ENG-123 or its URL.');
   return id.toUpperCase();
+}
+
+/** Return the GitHub owner/repository part of a standard Git remote URL. */
+export function githubRepositoryFromRemote(remote: string | null): string {
+  if (remote === null) return '';
+  const match = /^(?:git@github\.com:|https:\/\/github\.com\/)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/i.exec(remote.trim());
+  return match?.[1]?.toLowerCase() ?? '';
 }
 const clean = (s: string) => s.replace(/[\r\n\t]/g, ' ').replace(/[\[\]<>`]/g, '').slice(0, 180);
 export function describe(id: string, before: Snapshot, after: Snapshot): string | null {

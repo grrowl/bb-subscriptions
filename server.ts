@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { defineRpcContract, type BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-import { canonical, describe, platformSchema, snapshotSchema, subscriptionSchema, type Platform, type Snapshot } from './model';
+import { canonical, describe, githubRepositoryFromRemote, platformSchema, snapshotSchema, subscriptionSchema, type Platform, type Snapshot } from './model';
 import { fetchSnapshot, ProviderError } from './providers';
 const scope = z.object({ threadId: z.string().min(1).max(200) });
 const mutation = scope.extend({ platform: platformSchema, ids: z.array(z.string().min(1).max(1000)).min(1).max(50) });
@@ -30,8 +30,16 @@ export default function plugin(bb: BbPluginApi) {
   }
   async function mutate(input: z.infer<typeof mutation>, add: boolean) {
     const config = await settings.get();
-    const ids = [...new Set(input.ids.map(id => canonical(input.platform, id, config.githubRepository)))];
-    if (add) await bb.sdk.threads.get({ threadId: input.threadId });
+    const needsGitHubRemote = input.platform === 'github'
+      && config.githubRepository === ''
+      && input.ids.some(id => /^#?[1-9]\d*$/.test(id.trim()));
+    const thread = add || needsGitHubRemote
+      ? await bb.sdk.threads.get({ threadId: input.threadId })
+      : null;
+    const inferredRepository = needsGitHubRemote && thread?.projectId
+      ? githubRepositoryFromRemote((await bb.sdk.projects.get({ projectId: thread.projectId })).gitRemoteUrl)
+      : '';
+    const ids = [...new Set(input.ids.map(id => canonical(input.platform, id, config.githubRepository || inferredRepository)))];
     return serial(async () => {
       db.transaction(() => {
         if (add && rows(input.threadId).length + ids.filter(id => !db.prepare('SELECT 1 FROM subscriptions WHERE thread=? AND platform=? AND id=?').get(input.threadId, input.platform, id)).length > 100) throw new Error('Maximum 100 subscriptions per thread.');

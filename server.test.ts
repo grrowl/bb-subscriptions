@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFakePluginHost, makeThreadResponse, experimental_scanPublicSdkOnly } from '@get-bb/plugin-sdk/testing';
 import plugin from './server';
-import { canonical, describe as transition, type Snapshot } from './model';
+import { canonical, describe as transition, githubRepositoryFromRemote, type Snapshot } from './model';
 import { fetchSnapshot, ProviderError } from './providers';
 vi.mock('./providers', async original => ({ ...await original<typeof import('./providers')>(), fetchSnapshot: vi.fn() }));
 const snapshot: Snapshot = { title: 'Example', url: 'https://github.com/o/r/pull/1', state: 'open', updatedAt: '2026-01-01', fields: { checks: 'pending' } };
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 function host() {
-  const result = createFakePluginHost({ pluginId: 'subscriptions', sdk: { threads: { get: async ({ threadId }) => makeThreadResponse({ id: threadId }), send: async () => ({ status: 'sent' } as never) } } });
+  const result = createFakePluginHost({ pluginId: 'subscriptions', sdk: { threads: { get: async ({ threadId }) => makeThreadResponse({ id: threadId }), send: async () => ({ status: 'sent' } as never) }, projects: { get: async () => ({ id: 'project-1', name: 'Stage 1', kind: 'standard', gitRemoteUrl: 'git@github.com:Levercon/stage-1.git', createdAt: 0, updatedAt: 0 }) } } });
   hosts.push(result); plugin(result.bb); return result;
 }
 async function cycle(h: ReturnType<typeof host>, check: () => void) {
@@ -23,6 +23,8 @@ describe('IDs and summaries', () => {
     expect(canonical('github', 'https://github.com/O/R/pull/12/files')).toBe('o/r#12');
     expect(canonical('github', '12', 'O/R')).toBe('o/r#12');
     expect(canonical('linear', 'https://linear.app/acme/issue/eng-12/title')).toBe('ENG-12');
+    expect(githubRepositoryFromRemote('git@github.com:Levercon/stage-1.git')).toBe('levercon/stage-1');
+    expect(githubRepositoryFromRemote('https://github.com/Levercon/stage-1/')).toBe('levercon/stage-1');
     expect(() => canonical('github', 'https://evil.test/o/r/pull/1')).toThrow();
     expect(() => canonical('github', '1')).toThrow();
     expect(() => canonical('linear', '--help')).toThrow();
@@ -31,6 +33,12 @@ describe('IDs and summaries', () => {
     expect(transition('o/r#1', snapshot, snapshot)).toBeNull();
     expect(transition('o/r#1', snapshot, { ...snapshot, state: 'merged', fields: { checks: 'success' } })).toContain('open → merged; checks: pending → success');
   });
+});
+it('infers a GitHub repository from the subscribing thread project for bare PR numbers', async () => {
+  const h = host();
+  const result: any = await h.harness.behavior.callRpc('subscribe', { threadId: 't1', platform: 'github', ids: ['480', '#481'] });
+  expect(result.ids).toEqual(['levercon/stage-1#480', 'levercon/stage-1#481']);
+  expect(h.harness.inspection.sdk.callsTo('projects.get')).toHaveLength(1);
 });
 it('bulk operations are scoped, idempotent, and reject invalid batches atomically', async () => {
   const h = host();
