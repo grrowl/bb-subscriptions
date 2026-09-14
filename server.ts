@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { defineRpcContract, type BbPluginApi } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
-import { describe, snapshotSchema, subscriptionSchema, type Snapshot } from './model';
+import { compose, describe, snapshotSchema, subscriptionSchema, type Snapshot } from './model';
 import { fetchBatch, githubRepositoryFromRemote, isBareNumber, platformSchema, provider, providers, providerSettings, ProviderError, type ProviderConfig } from './providers';
 
 const scope = z.object({ threadId: z.string().min(1).max(200) });
@@ -12,6 +12,7 @@ export const rpcContract = defineRpcContract({
   subscribe: { input: mutation, output: z.object({ ids: z.array(z.string()) }) },
   unsubscribe: { input: mutation, output: z.object({ ids: z.array(z.string()) }) },
 });
+type Pending = { thread: string; baselines: string; flush_at: number; dirty: number; queued_id: string | null; queued_updated: number | null };
 type Row = { thread: string; platform: string; id: string; snapshot: string | null; error: string | null; checked: number | null; due: number; failures: number; generation: string };
 const MAX_PER_THREAD = 100;
 const platforms = providers.map(p => p.id).join('|');
@@ -20,10 +21,12 @@ const backoff = (failures: number) => Math.min(3600_000, 30_000 * 2 ** Math.min(
 export default function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     intervalSeconds: { type: 'number', label: 'Check interval in seconds', default: 60, experimental_schema: z.number().int().min(30).max(3600) },
+    debounceSeconds: { type: 'number', label: 'Debounce notifications within (seconds)', description: 'Changes seen within this window go out as one message. While a thread is busy, later changes rewrite the message already waiting for it.', default: 10, experimental_schema: z.number().int().min(0).max(600) },
     ...providerSettings,
   });
   const db = bb.storage.database();
-  bb.storage.migrate(db, [`CREATE TABLE subscriptions (thread TEXT NOT NULL, platform TEXT NOT NULL, id TEXT NOT NULL, snapshot TEXT, error TEXT, checked INTEGER, due INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, generation TEXT NOT NULL, PRIMARY KEY(thread, platform, id))`]);
+  bb.storage.migrate(db, [`CREATE TABLE subscriptions (thread TEXT NOT NULL, platform TEXT NOT NULL, id TEXT NOT NULL, snapshot TEXT, error TEXT, checked INTEGER, due INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, generation TEXT NOT NULL, PRIMARY KEY(thread, platform, id))`,
+    `CREATE TABLE pending (thread TEXT PRIMARY KEY, baselines TEXT NOT NULL, flush_at INTEGER NOT NULL, dirty INTEGER NOT NULL DEFAULT 1, queued_id TEXT, queued_updated INTEGER)`]);
   const changed = (threadId: string) => bb.realtime.publish('subscriptions-changed', { threadId });
   const rows = (threadId: string) => db.prepare('SELECT * FROM subscriptions WHERE thread = ? ORDER BY platform, id').all(threadId) as Row[];
   const list = async ({ threadId }: z.infer<typeof scope>) => ({
@@ -103,7 +106,11 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.events.on('thread.deleted', ({ thread }) => serial(async () => { db.prepare('DELETE FROM subscriptions WHERE thread=?').run(thread.id); changed(thread.id); }));
+  bb.events.on('thread.deleted', ({ thread }) => serial(async () => { db.prepare('DELETE FROM subscriptions WHERE thread=?').run(thread.id); db.prepare('DELETE FROM pending WHERE thread=?').run(thread.id); changed(thread.id); }));
+  // Once the agent has read (or the user removed) our queued message, later changes start from a fresh baseline.
+  const consumed = ({ entry }: { entry: { id: string; threadId: string } }) => serial(async () => { db.prepare('DELETE FROM pending WHERE thread=? AND queued_id=?').run(entry.threadId, entry.id); });
+  bb.events.on('message.dispatched', consumed);
+  bb.events.on('message.cancelled', consumed);
   // A settings change (new key, new interval) re-checks everything and lifts any provider pause.
   const paused = new Map<string, { until: number; message: string }>();
   settings.onChange(() => { paused.clear(); db.prepare('UPDATE subscriptions SET due=0, failures=0').run(); });
@@ -113,6 +120,7 @@ export default function plugin(bb: BbPluginApi) {
   async function poll(signal: AbortSignal) {
     const config = await settings.get() as ProviderConfig;
     const interval = (config.intervalSeconds as number) * 1000;
+    const debounce = (config.debounceSeconds as number) * 1000;
     const now = Date.now();
     const due = db.prepare('SELECT * FROM subscriptions WHERE due <= ? ORDER BY due LIMIT 100').all(now) as Row[];
     if (!due.length) return;
@@ -145,11 +153,57 @@ export default function plugin(bb: BbPluginApi) {
         else paused.delete(platform);
       }
       if (signal.aborted) return;
-      for (const row of group) await deliver(row, items.get(row.id) ?? new ProviderError('No result returned for this item; will retry.'), interval, signal);
+      for (const row of group) await deliver(row, items.get(row.id) ?? new ProviderError('No result returned for this item; will retry.'), interval, debounce, signal);
     }
   }
 
-  function deliver(row: Row, outcome: Snapshot | ProviderError, interval: number, signal: AbortSignal) {
+  /** Note a change for the thread's next message, keeping the oldest unseen baseline per item. */
+  function record(thread: string, key: string, before: Snapshot, debounce: number) {
+    const pending = db.prepare('SELECT * FROM pending WHERE thread=?').get(thread) as Pending | undefined;
+    const baselines: Record<string, Snapshot> = pending ? JSON.parse(pending.baselines) : {};
+    baselines[key] ??= before;
+    if (!pending) db.prepare('INSERT INTO pending (thread,baselines,flush_at,dirty) VALUES (?,?,?,1)').run(thread, JSON.stringify(baselines), Date.now() + debounce);
+    else db.prepare('UPDATE pending SET baselines=?, dirty=1, flush_at=CASE WHEN dirty=1 THEN flush_at ELSE ? END WHERE thread=?').run(JSON.stringify(baselines), Date.now() + debounce, thread);
+  }
+  /** Send or rewrite one message per thread whose debounce window has passed. */
+  async function flush(signal: AbortSignal) {
+    const ready = db.prepare('SELECT * FROM pending WHERE dirty=1 AND flush_at <= ?').all(Date.now()) as Pending[];
+    for (const pending of ready) {
+      if (signal.aborted) return;
+      await serial(async () => {
+        const current = db.prepare('SELECT * FROM pending WHERE thread=?').get(pending.thread) as Pending | undefined;
+        if (!current || !current.dirty || signal.aborted) return;
+        const baselines: Record<string, Snapshot> = JSON.parse(current.baselines);
+        const lines: string[] = [];
+        for (const [key, before] of Object.entries(baselines)) {
+          const [platform, id] = key.split(/:(.*)/s);
+          const row = db.prepare('SELECT snapshot FROM subscriptions WHERE thread=? AND platform=? AND id=?').get(current.thread, platform, id) as Pick<Row, 'snapshot'> | undefined;
+          const line = row?.snapshot ? describe(id, before, snapshotSchema.parse(JSON.parse(row.snapshot))) : null;
+          if (line) lines.push(line);
+        }
+        const text = compose(lines);
+        if (!text) { db.prepare('DELETE FROM pending WHERE thread=?').run(current.thread); return; }
+        const input = [{ type: 'text' as const, text, mentions: [] }];
+        try {
+          if (current.queued_id !== null && current.queued_updated !== null) {
+            try {
+              const updated = await bb.sdk.threads.queuedMessages.update({ threadId: current.thread, queuedMessageId: current.queued_id, expectedUpdatedAt: current.queued_updated, input });
+              db.prepare('UPDATE pending SET dirty=0, queued_updated=? WHERE thread=?').run(updated.updatedAt, current.thread);
+              return;
+            } catch { /* Row consumed, edited or removed since: fall through to a fresh send. */ }
+          }
+          const sent = await bb.sdk.threads.send({ threadId: current.thread, mode: 'queue-if-active', input });
+          if (sent.delivery === 'queued') db.prepare('UPDATE pending SET dirty=0, queued_id=?, queued_updated=? WHERE thread=?').run(sent.queuedMessage.id, sent.queuedMessage.updatedAt, current.thread);
+          else db.prepare('DELETE FROM pending WHERE thread=?').run(current.thread);
+        } catch {
+          // Delivery failed (bb offline, thread gone): keep the baselines and retry on a later sweep.
+          db.prepare('UPDATE pending SET flush_at=? WHERE thread=?').run(Date.now() + 5_000, current.thread);
+        }
+      });
+    }
+  }
+
+  function deliver(row: Row, outcome: Snapshot | ProviderError, interval: number, debounce: number, signal: AbortSignal) {
     return serial(async () => {
       const current = db.prepare('SELECT * FROM subscriptions WHERE thread=? AND platform=? AND id=?').get(row.thread, row.platform, row.id) as Row | undefined;
       if (!current || current.generation !== row.generation || signal.aborted) return;
@@ -157,8 +211,7 @@ export default function plugin(bb: BbPluginApi) {
         if (outcome instanceof ProviderError) throw outcome;
         const snapshot = snapshotSchema.parse(outcome);
         const before = current.snapshot ? snapshotSchema.parse(JSON.parse(current.snapshot)) : null;
-        const message = before ? describe(row.id, before, snapshot) : null;
-        if (message) await bb.sdk.threads.send({ threadId: row.thread, mode: 'queue-if-active', input: [{ type: 'text', text: message, mentions: [] }] });
+        if (before && describe(row.id, before, snapshot)) record(row.thread, `${row.platform}:${row.id}`, before, debounce);
         db.prepare('UPDATE subscriptions SET snapshot=?,error=NULL,checked=?,due=?,failures=0 WHERE thread=? AND platform=? AND id=?').run(JSON.stringify(snapshot), Date.now(), Date.now() + interval, row.thread, row.platform, row.id);
       } catch (cause) {
         const delay = cause instanceof ProviderError ? cause.retryMs : 60_000;
@@ -173,6 +226,7 @@ export default function plugin(bb: BbPluginApi) {
     const signal = AbortSignal.any([serviceSignal, lifecycle.signal]);
     while (!signal.aborted) {
       await poll(signal);
+      if (!signal.aborted) await flush(signal);
       try { await sleep(5000, undefined, { signal }); } catch { if (!signal.aborted) throw new Error('Watcher sleep failed'); }
     }
   } });

@@ -190,6 +190,29 @@ Candidate next providers with cheap read-only tokens: GitHub Issues (same
 query shape as PRs), GitLab MRs, Jira Cloud (basic auth with API token),
 Notion pages, Vercel deployments.
 
+## 3b. Delivery: one live message per thread
+
+Observed in a real thread: five updates for one PR in two hours, three of
+them queued back-to-back while the agent was busy, two of them bare
+"updated". Fixes, all in 0.3.0:
+
+- `describe()` no longer emits "updated" for an `updatedAt` bump with no
+  tracked field change.
+- Changes are recorded in a `pending` table keyed by thread, holding the
+  oldest unseen baseline per item, and flushed after `debounceSeconds`
+  (default 10) as one message built from baseline → current snapshot.
+- A queued send (`delivery: "queued"`) stores the row id and `updatedAt`.
+  While that row waits, later changes call
+  `threads.queuedMessages.update` with `expectedUpdatedAt` to rewrite it in
+  place. `message.dispatched` and `message.cancelled` clear the bookkeeping
+  so the next change starts from a fresh baseline. A failed update (row gone
+  or edited) falls back to a normal send.
+- Thread-busy detection is bb's: `queue-if-active` decides. The plugin never
+  inspects thread status.
+
+Open question for the bb team: the thread log labelled these
+`queue-if-active` messages "steer" when the thread was active.
+
 ## 4. Improvements noticed along the way
 
 Ordered by how much they matter. Status as of the 0.2.0 commit: items 1, 2, 3,

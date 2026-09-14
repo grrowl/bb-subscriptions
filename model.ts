@@ -11,7 +11,7 @@ export const subscriptionSchema = z.object({
 });
 export type Subscription = z.infer<typeof subscriptionSchema>;
 const clean = (s: string) => s.replace(/[\r\n\t]/g, ' ').replace(/[\[\]<>`()]/g, '').slice(0, 180);
-/** Summarise what changed between two snapshots, or null when nothing did. */
+/** One item's changes between two snapshots, or null when nothing the plugin tracks changed. */
 export function describe(id: string, before: Snapshot, after: Snapshot): string | null {
   const changes: string[] = [];
   if (before.state !== after.state) changes.push(`${clean(before.state)} → ${clean(after.state)}`);
@@ -19,7 +19,12 @@ export function describe(id: string, before: Snapshot, after: Snapshot): string 
   for (const key of new Set([...Object.keys(before.fields), ...Object.keys(after.fields)])) {
     if (before.fields[key] !== after.fields[key]) changes.push(`${clean(key)}: ${clean(before.fields[key] || 'none')} → ${clean(after.fields[key] || 'none')}`);
   }
-  if (!changes.length && before.updatedAt !== after.updatedAt) changes.push('updated');
   if (!changes.length) return null;
-  return `[Subscription update] [${clean(id)}](${after.url}): ${changes.slice(0, 5).join('; ')}${changes.length > 5 ? '; other fields updated' : ''}.`;
+  return `[${clean(id)}](${after.url}): ${changes.slice(0, 5).join('; ')}${changes.length > 5 ? '; other fields updated' : ''}.`;
+}
+/** The message for one or more changed items. Null when no line survives. */
+export function compose(lines: string[]): string | null {
+  if (!lines.length) return null;
+  if (lines.length === 1) return `[Subscription update] ${lines[0]}`;
+  return `[Subscription update]\n${lines.map(line => `- ${line}`).join('\n')}`;
 }

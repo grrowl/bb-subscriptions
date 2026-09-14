@@ -47,6 +47,8 @@ Optional settings:
 # In a project thread, this is inferred from its GitHub remote automatically.
 bb plugin config subscriptions set githubRepository owner/repo
 bb plugin config subscriptions set intervalSeconds 60
+# Changes seen within this window go out as one message (default 10; 0 sends at once)
+bb plugin config subscriptions set debounceSeconds 10
 ```
 
 ## Behavior
@@ -54,8 +56,9 @@ bb plugin config subscriptions set intervalSeconds 60
 - Checks due items every five seconds, with a default per-item interval of 60 seconds (configurable 30–3600). First successful read establishes a silent baseline. `list` shows pending/error until it succeeds.
 - GitHub: open/draft/closed/merged, commit, review decision, latest review, check rollup, assignees, labels and comments.
 - Linear: status, assignee, priority, labels and latest comment. A changed update timestamp without a specific field difference produces “updated”.
-- Example: `[Subscription update] [owner/repo#123](https://github.com/owner/repo/pull/123): open → merged; checks: pending → success.`
-- Unchanged snapshots do not send. Failed reads/sends retain the previous baseline and back off, up to an hour. `gh` processes have 20-second timeouts and are cancelled on shutdown/reload.
+- Example: `[Subscription update] [owner/repo#123](https://github.com/owner/repo/pull/123): open → merged; checks: pending → success.` Several items changing together become one bulleted message.
+- **One message per thread, never a stack.** Changes are held for `debounceSeconds` and sent together. If the thread is busy, bb queues the message and the plugin remembers it; any further change rewrites that same queued message with the full diff since the agent last looked, so an idle agent always reads one current summary rather than several stale ones. Once the message is read (or removed from the queue), the next change starts a new one.
+- Unchanged snapshots do not send, and a bumped `updatedAt` with no tracked field change is ignored. Failed reads/sends retain the previous baseline and back off, up to an hour. `gh` processes have 20-second timeouts and are cancelled on shutdown/reload.
 - Each sweep makes one batched Linear request per 50 due issues, and at most four concurrent `gh` calls. A Linear `RATELIMITED` reply, or fewer than 100 requests left in the hourly window, pauses all Linear checks until the window resets (Linear allows 2 500 requests per user per hour, shared across all of that user's keys). A missing or rejected key pauses Linear for an hour; changing any setting lifts the pause immediately.
 - Lookups are shared for identical items in each sweep, and each thread is looked up once per sweep. Delivery is serialized against unsubscribe and checks subscription identity after fetching, so removing a subscription prevents a stale lookup from sending.
 - SQLite state survives reload/restart. Archived threads pause checks; deleted threads lose their subscriptions. Subscriptions remain after a PR merges or issue completes, so reopening is observable.
