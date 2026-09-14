@@ -10,7 +10,7 @@
     "name": "Subscriptions",
     "description": "Follow GitHub PRs and Linear issues with per-thread subscriptions and concise update messages.",
     "branding": {
-      "icon": "Bell"
+      "icon": "./assets/icon.svg"
     },
     "server": "./server.ts",
     "app": "./app.tsx",
