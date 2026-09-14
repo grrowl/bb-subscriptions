@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createFakePluginHost, makeThreadResponse, experimental_scanPublicSdkOnly } from '@get-bb/plugin-sdk/testing';
 import plugin from './server';
-import { canonical, describe as transition, githubRepositoryFromRemote, type Snapshot } from './model';
-import { fetchSnapshot, ProviderError } from './providers';
-vi.mock('./providers', async original => ({ ...await original<typeof import('./providers')>(), fetchSnapshot: vi.fn() }));
+import { describe as transition, type Snapshot } from './model';
+import { fetchBatch, githubRepositoryFromRemote, provider, ProviderError } from './providers';
+vi.mock('./providers', async original => ({ ...await original<typeof import('./providers')>(), fetchBatch: vi.fn() }));
+const canonical = (platform: string, raw: string, repository = '') => provider(platform).canonical(raw, { config: {}, repository });
+/** Every id in the batch resolves to `value` (a snapshot or a ProviderError). */
+const resolveAll = (value: Snapshot | ProviderError) => vi.mocked(fetchBatch).mockImplementation(async (_platform, ids) => ({ items: new Map(ids.map(id => [id, value])) }));
 const snapshot: Snapshot = { title: 'Example', url: 'https://github.com/o/r/pull/1', state: 'open', updatedAt: '2026-01-01', fields: { checks: 'pending' } };
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 function host() {
@@ -17,7 +20,8 @@ async function cycle(h: ReturnType<typeof host>, check: () => void) {
 }
 async function due(h: ReturnType<typeof host>) { const current: any = await h.harness.behavior.callRpc('list', { threadId: 't1' }); await h.harness.behavior.setSettings({ intervalSeconds: current.intervalSeconds === 60 ? 61 : 60 }); }
 const input = { threadId: 't1', platform: 'github', ids: ['o/r#1'] };
-afterEach(async () => { for (const h of hosts.splice(0)) await h.harness.lifecycle.dispose(); vi.restoreAllMocks(); vi.mocked(fetchSnapshot).mockReset(); });
+const db = (h: ReturnType<typeof host>) => h.bb.storage.database();
+afterEach(async () => { for (const h of hosts.splice(0)) await h.harness.lifecycle.dispose(); vi.restoreAllMocks(); vi.mocked(fetchBatch).mockReset(); });
 describe('IDs and summaries', () => {
   it('normalizes URLs, defaults and provider casing', () => {
     expect(canonical('github', 'https://github.com/O/R/pull/12/files')).toBe('o/r#12');
@@ -31,7 +35,7 @@ describe('IDs and summaries', () => {
   });
   it('describes state/check changes without repeating identical snapshots', () => {
     expect(transition('o/r#1', snapshot, snapshot)).toBeNull();
-    expect(transition('o/r#1', snapshot, { ...snapshot, state: 'merged', fields: { checks: 'success' } })).toContain('open → merged; checks: pending → success');
+    expect(transition('o/r#1', snapshot, { ...snapshot, state: 'merged', fields: { checks: 'success' } })).toContain('[o/r#1](https://github.com/o/r/pull/1): open → merged; checks: pending → success');
   });
 });
 it('infers a GitHub repository from the subscribing thread project for bare PR numbers', async () => {
@@ -51,21 +55,21 @@ it('bulk operations are scoped, idempotent, and reject invalid batches atomicall
   expect((await h.harness.behavior.callRpc('list', { threadId: 't2' }) as any).subscriptions).toHaveLength(1);
 });
 it('sets a silent baseline, wakes on changes, and does not repeat unchanged updates', async () => {
-  const h = host(); vi.mocked(fetchSnapshot).mockResolvedValue(snapshot);
+  const h = host(); resolveAll(snapshot);
   await h.harness.behavior.callRpc('subscribe', input);
   await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
   expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(0);
-  vi.mocked(fetchSnapshot).mockResolvedValue({ ...snapshot, state: 'merged' }); await due(h);
+  resolveAll({ ...snapshot, state: 'merged' }); await due(h);
   await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1));
-  await due(h); await cycle(h, () => expect(vi.mocked(fetchSnapshot)).toHaveBeenCalledTimes(3));
+  await due(h); await cycle(h, () => expect(vi.mocked(fetchBatch)).toHaveBeenCalledTimes(3));
   expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1);
 });
 it('preserves baseline on delivery failure and retries without losing the change', async () => {
-  const h = host(); vi.mocked(fetchSnapshot).mockResolvedValue(snapshot);
+  const h = host(); resolveAll(snapshot);
   await h.harness.behavior.callRpc('subscribe', input);
   await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
   h.harness.sdk.stub('threads.send', async () => { throw new Error('offline'); });
-  vi.mocked(fetchSnapshot).mockResolvedValue({ ...snapshot, state: 'closed' }); await due(h);
+  resolveAll({ ...snapshot, state: 'closed' }); await due(h);
   await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1));
   const failed: any = await h.harness.behavior.callRpc('list', { threadId: 't1' });
   expect(failed.subscriptions[0].snapshot.state).toBe('open'); expect(failed.subscriptions[0].error).toContain('retry');
@@ -74,10 +78,10 @@ it('preserves baseline on delivery failure and retries without losing the change
   expect((await h.harness.behavior.callRpc('list', { threadId: 't1' }) as any).subscriptions[0].snapshot.state).toBe('closed');
 });
 it('unsubscribing during an in-flight fetch prevents delivery', async () => {
-  const h = host(); vi.mocked(fetchSnapshot).mockResolvedValue(snapshot);
+  const h = host(); resolveAll(snapshot);
   await h.harness.behavior.callRpc('subscribe', input); await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
   let resolve!: (s: Snapshot) => void;
-  vi.mocked(fetchSnapshot).mockImplementation(() => new Promise(r => { resolve = r; })); await due(h);
+  vi.mocked(fetchBatch).mockImplementation((_p, ids) => new Promise(r => { resolve = s => r({ items: new Map(ids.map(id => [id, s])) }); })); await due(h);
   const service = h.harness.behavior.runService('watch');
   await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
   await h.harness.behavior.callRpc('unsubscribe', input); resolve({ ...snapshot, state: 'merged' });
@@ -85,13 +89,13 @@ it('unsubscribing during an in-flight fetch prevents delivery', async () => {
   expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(0);
 });
 it('shares lookups across threads and pauses archived threads', async () => {
-  const h = host(); vi.mocked(fetchSnapshot).mockResolvedValue(snapshot);
+  const h = host(); resolveAll(snapshot);
   await h.harness.behavior.callRpc('subscribe', input); await h.harness.behavior.callRpc('subscribe', { ...input, threadId: 't2' });
   await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(4));
-  expect(fetchSnapshot).toHaveBeenCalledTimes(1);
+  expect(fetchBatch).toHaveBeenCalledTimes(1);
   h.harness.sdk.stub('threads.get', async ({ threadId }) => makeThreadResponse({ id: threadId, archivedAt: 100 })); await due(h);
   const service = h.harness.behavior.runService('watch'); await new Promise(r => setTimeout(r, 30)); service.controller.abort(); await service.done;
-  expect(fetchSnapshot).toHaveBeenCalledTimes(1);
+  expect(fetchBatch).toHaveBeenCalledTimes(1);
 });
 it('keeps subscriptions over reload and removes them when a thread is deleted', async () => {
   let h = host(); await h.harness.behavior.callRpc('subscribe', input);
@@ -102,12 +106,30 @@ it('keeps subscriptions over reload and removes them when a thread is deleted', 
   expect((await h.harness.behavior.callRpc('list', { threadId: 't1' }) as any).subscriptions).toHaveLength(0);
 });
 it('surfaces provider failures without messages and observes retry backoff', async () => {
-  const h = host(); vi.mocked(fetchSnapshot).mockRejectedValue(new ProviderError('Rate limited', 900_000));
+  const h = host(); resolveAll(new ProviderError('Rate limited', 900_000));
   await h.harness.behavior.callRpc('subscribe', input); await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
   const result: any = await h.harness.behavior.callRpc('list', { threadId: 't1' });
   expect(result.subscriptions[0].error).toBe('Rate limited');
   const service = h.harness.behavior.runService('watch'); await new Promise(r => setTimeout(r, 30)); service.controller.abort(); await service.done;
-  expect(fetchSnapshot).toHaveBeenCalledTimes(1); expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(0);
+  expect(fetchBatch).toHaveBeenCalledTimes(1); expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(0);
+});
+it('batches one lookup per platform per sweep and pauses a provider after a rate limit', async () => {
+  const h = host();
+  vi.mocked(fetchBatch).mockImplementation(async (_platform, ids) => ({ items: new Map(ids.map(id => [id, snapshot])), pause: new ProviderError('Linear rate limit reached', 900_000, true) }));
+  await h.harness.behavior.callRpc('subscribe', { threadId: 't1', platform: 'linear', ids: ['ENG-1', 'ENG-2'] });
+  await h.harness.behavior.callRpc('subscribe', { threadId: 't2', platform: 'linear', ids: ['ENG-2'] });
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(5));
+  expect(fetchBatch).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(fetchBatch).mock.calls[0][1]).toEqual(['ENG-1', 'ENG-2']);
+  const baseline: any = await h.harness.behavior.callRpc('list', { threadId: 't1' });
+  expect(baseline.subscriptions.map((s: any) => s.snapshot?.state)).toEqual(['open', 'open']);
+  // Next sweep: the provider is paused, so no fetch happens and rows carry the pause message.
+  db(h).prepare('UPDATE subscriptions SET due=0').run();
+  const service = h.harness.behavior.runService('watch'); await new Promise(r => setTimeout(r, 30)); service.controller.abort(); await service.done;
+  expect(fetchBatch).toHaveBeenCalledTimes(1);
+  const pausedRows: any = await h.harness.behavior.callRpc('list', { threadId: 't1' });
+  expect(pausedRows.subscriptions[0].error).toContain('rate limit');
+  expect(pausedRows.subscriptions[0].snapshot.state).toBe('open');
 });
 it('supports bulk CLI aliases, explicit thread scope and errors', async () => {
   const h = host();

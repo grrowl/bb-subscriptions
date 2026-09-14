@@ -192,7 +192,10 @@ Notion pages, Vercel deployments.
 
 ## 4. Improvements noticed along the way
 
-Ordered by how much they matter.
+Ordered by how much they matter. Status as of the 0.2.0 commit: items 1, 2, 3,
+7, 8, 9, 10, 11, 12 and 13 are done; sections 2 and 3 above are implemented
+(`providers/`), with GitHub still read through `gh`. Open: 4, 5, 6, 14, and
+the GitHub PAT transport.
 
 1. **Per-row rate limiting is wrong-shaped.** One rate-limited fetch delays
    only that row; the other 99 rows still fire in the same sweep. Needs a
