@@ -154,8 +154,10 @@ it('rewrites the message waiting for a busy thread instead of queueing another, 
   resolveAll({ ...snapshot, fields: { checks: 'pending', commit: 'abc' } }); await due(h);
   await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1));
   expect(sentText(h)).toContain('commit: none → abc');
-  // Second change while still queued: the same row is rewritten with the full diff since the baseline.
-  resolveAll({ ...snapshot, state: 'merged', fields: { checks: 'success', commit: 'abc' } }); await due(h);
+  // Second change while still queued: the same row is rewritten with the full diff since the baseline,
+  // straight away rather than after the debounce window.
+  resolveAll({ ...snapshot, state: 'merged', fields: { checks: 'success', commit: 'abc' } });
+  await h.harness.behavior.setSettings({ debounceSeconds: 10, intervalSeconds: 62 });
   await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.queuedMessages.update')).toHaveLength(1));
   const update = h.harness.inspection.sdk.callsTo('threads.queuedMessages.update')[0][0] as any;
   expect(update).toMatchObject({ threadId: 't1', queuedMessageId: 'q1', expectedUpdatedAt: 100 });

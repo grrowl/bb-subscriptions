@@ -157,13 +157,16 @@ export default function plugin(bb: BbPluginApi) {
     }
   }
 
-  /** Note a change for the thread's next message, keeping the oldest unseen baseline per item. */
+  /**
+   * Note a change for the thread's next message, keeping the oldest unseen baseline per item.
+   * The debounce only delays a brand-new message; a message already waiting in the queue is rewritten on the next sweep.
+   */
   function record(thread: string, key: string, before: Snapshot, debounce: number) {
     const pending = db.prepare('SELECT * FROM pending WHERE thread=?').get(thread) as Pending | undefined;
     const baselines: Record<string, Snapshot> = pending ? JSON.parse(pending.baselines) : {};
     baselines[key] ??= before;
     if (!pending) db.prepare('INSERT INTO pending (thread,baselines,flush_at,dirty) VALUES (?,?,?,1)').run(thread, JSON.stringify(baselines), Date.now() + debounce);
-    else db.prepare('UPDATE pending SET baselines=?, dirty=1, flush_at=CASE WHEN dirty=1 THEN flush_at ELSE ? END WHERE thread=?').run(JSON.stringify(baselines), Date.now() + debounce, thread);
+    else db.prepare('UPDATE pending SET baselines=?, dirty=1, flush_at=CASE WHEN dirty=1 THEN flush_at WHEN queued_id IS NOT NULL THEN ? ELSE ? END WHERE thread=?').run(JSON.stringify(baselines), Date.now(), Date.now() + debounce, thread);
   }
   /** Send or rewrite one message per thread whose debounce window has passed. */
   async function flush(signal: AbortSignal) {

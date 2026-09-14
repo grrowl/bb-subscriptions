@@ -201,6 +201,8 @@ them queued back-to-back while the agent was busy, two of them bare
 - Changes are recorded in a `pending` table keyed by thread, holding the
   oldest unseen baseline per item, and flushed after `debounceSeconds`
   (default 10) as one message built from baseline → current snapshot.
+  The debounce applies only to a brand-new message; a change that lands
+  while a queued message is standing rewrites it on the next sweep.
 - A queued send (`delivery: "queued"`) stores the row id and `updatedAt`.
   While that row waits, later changes call
   `threads.queuedMessages.update` with `expectedUpdatedAt` to rewrite it in
