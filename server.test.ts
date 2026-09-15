@@ -178,6 +178,6 @@ it('supports bulk CLI aliases, explicit thread scope and errors', async () => {
   expect((await h.harness.behavior.runCli(['sub', 'github', 'o/r#1', '--thread'])).exitCode).toBe(1);
 });
 it('uses public SDK imports only', async () => {
-  const result = await experimental_scanPublicSdkOnly(process.cwd(), { allow: [/^react$/, /^vitest$/, /^@testing-library\/react$/] });
+  const result = await experimental_scanPublicSdkOnly(process.cwd(), { allow: [/^react$/, /^vitest$/, /^@testing-library\/react$/, /^@radix-ui\/react-popover$/] });
   expect(result.violations).toEqual([]); expect(result.privateDependencies).toEqual([]);
 });
