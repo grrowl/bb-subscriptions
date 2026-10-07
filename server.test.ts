@@ -3,6 +3,7 @@ import { createFakePluginHost, makeQueueEntry, makeThreadResponse, experimental_
 import plugin from './server';
 import { describe as transition, type Snapshot } from './model';
 import { fetchBatch, githubRepositoryFromRemote, provider, ProviderError } from './providers';
+import { toSnapshot } from './providers/github';
 vi.mock('./providers', async original => ({ ...await original<typeof import('./providers')>(), fetchBatch: vi.fn() }));
 const canonical = (platform: string, raw: string, repository = '') => provider(platform).canonical(raw, { config: {}, repository });
 /** Every id in the batch resolves to `value` (a snapshot or a ProviderError). */
@@ -22,6 +23,11 @@ async function due(h: ReturnType<typeof host>) { const current: any = await h.ha
 const sentText = (h: ReturnType<typeof host>, n = 0) => (h.harness.inspection.sdk.callsTo('threads.send')[n][0] as any).input[0].text as string;
 const input = { threadId: 't1', platform: 'github', ids: ['o/r#1'] };
 const db = (h: ReturnType<typeof host>) => h.bb.storage.database();
+const pr = (mergeable: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN') => toSnapshot('o/r#1', {
+  title: 'Example', state: 'OPEN', isDraft: false, updatedAt: '2026-01-01', headRefOid: 'abcdef123456', reviewDecision: null, mergeable,
+  assignees: { nodes: [] }, labels: { nodes: [] }, comments: { totalCount: 0, nodes: [] },
+  reviews: { totalCount: 0, nodes: [] }, commits: { nodes: [] },
+});
 afterEach(async () => { for (const h of hosts.splice(0)) await h.harness.lifecycle.dispose(); vi.restoreAllMocks(); vi.mocked(fetchBatch).mockReset(); });
 describe('IDs and summaries', () => {
   it('normalizes URLs, defaults and provider casing', () => {
@@ -65,6 +71,99 @@ it('sets a silent baseline, wakes on changes, and does not repeat unchanged upda
   await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1));
   await due(h); await cycle(h, () => expect(vi.mocked(fetchBatch)).toHaveBeenCalledTimes(3));
   expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1);
+});
+it('notifies when a base-branch change introduces a merge conflict without changing the PR head or updatedAt', async () => {
+  const h = host(); resolveAll(pr('MERGEABLE'));
+  await h.harness.behavior.callRpc('subscribe', input);
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
+  expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(0);
+  resolveAll(pr('CONFLICTING')); await due(h);
+  await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1));
+  expect(sentText(h)).toBe('[Subscription update] [o/r#1](https://github.com/o/r/pull/1): merge conflicts detected.');
+  await due(h); await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(4));
+  expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1);
+});
+it('retains known merge conflicts through unknown polls and reload while delivering other changes', async () => {
+  let h = host(); resolveAll(pr('CONFLICTING'));
+  await h.harness.behavior.callRpc('subscribe', input);
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
+  resolveAll({ ...pr('UNKNOWN'), title: 'Renamed' }); await due(h);
+  await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1));
+  expect(sentText(h)).toBe('[Subscription update] [o/r#1](https://github.com/o/r/pull/1): title updated.');
+  const replacement = await h.harness.lifecycle.reload(plugin);
+  hosts.splice(hosts.indexOf(h), 1, replacement); h = replacement;
+  const listed: any = await h.harness.behavior.callRpc('list', { threadId: 't1' });
+  expect(listed.subscriptions[0].snapshot.mergeability).toBe('CONFLICTING');
+  resolveAll({ ...pr('CONFLICTING'), title: 'Renamed' }); await due(h);
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(1));
+  expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(0);
+  resolveAll({ ...pr('MERGEABLE'), title: 'Renamed' }); await due(h);
+  await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1));
+  expect(sentText(h)).toBe('[Subscription update] [o/r#1](https://github.com/o/r/pull/1): merge conflicts resolved.');
+});
+it('replaces a queued conflict warning with its resolution even when all other fields are unchanged', async () => {
+  const h = host(); resolveAll(pr('MERGEABLE'));
+  const queued = makeQueueEntry({ id: 'q1', threadId: 't1', updatedAt: 100 });
+  h.harness.sdk.stub('threads.send', async () => ({ delivery: 'queued', ok: true, queuedMessage: queued } as never));
+  h.harness.sdk.stub('threads.queuedMessages.update', async () => ({ ...queued, updatedAt: 200 } as never));
+  await h.harness.behavior.callRpc('subscribe', input);
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
+  resolveAll(pr('CONFLICTING')); await due(h);
+  await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1));
+  expect(sentText(h)).toContain('merge conflicts detected');
+  resolveAll(pr('MERGEABLE')); await due(h);
+  await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.queuedMessages.update')).toHaveLength(1));
+  const update = h.harness.inspection.sdk.callsTo('threads.queuedMessages.update')[0][0] as any;
+  expect(update.input[0].text).toBe('[Subscription update] [o/r#1](https://github.com/o/r/pull/1): merge conflicts resolved.');
+  expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1);
+});
+it.each(['MERGEABLE', 'CONFLICTING'] as const)('learns %s from a legacy persisted snapshot without mergeability', async mergeable => {
+  let h = host();
+  const legacy = pr('MERGEABLE'); delete legacy.mergeability;
+  resolveAll(legacy);
+  await h.harness.behavior.callRpc('subscribe', input);
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
+  const replacement = await h.harness.lifecycle.reload(plugin);
+  hosts.splice(hosts.indexOf(h), 1, replacement); h = replacement;
+  resolveAll(pr(mergeable)); await due(h);
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(1));
+  expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(mergeable === 'CONFLICTING' ? 1 : 0);
+  if (mergeable === 'CONFLICTING') expect(sentText(h)).toContain('merge conflicts detected');
+  const listed: any = await h.harness.behavior.callRpc('list', { threadId: 't1' });
+  expect(listed.subscriptions[0].snapshot.mergeability).toBe(mergeable);
+});
+it.each(['MERGEABLE', 'CONFLICTING'] as const)('learns %s after an initially unknown baseline without false resolution', async mergeable => {
+  const h = host(); resolveAll(pr('UNKNOWN'));
+  await h.harness.behavior.callRpc('subscribe', input);
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
+  resolveAll(pr(mergeable)); await due(h);
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(3));
+  expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(mergeable === 'CONFLICTING' ? 1 : 0);
+  if (mergeable === 'CONFLICTING') expect(sentText(h)).toContain('merge conflicts detected');
+});
+it.each(['MERGEABLE', 'CONFLICTING'] as const)('does not repeat %s after multiple unknown polls', async mergeable => {
+  const h = host(); resolveAll(pr(mergeable));
+  await h.harness.behavior.callRpc('subscribe', input);
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
+  for (const [index, result] of ['UNKNOWN', 'UNKNOWN', mergeable].entries()) {
+    resolveAll(pr(result as Parameters<typeof pr>[0])); await due(h);
+    await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(index + 3));
+    expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(0);
+  }
+});
+it('does not report closing a conflicted PR as conflict resolution, and detects conflicts on reopening', async () => {
+  const h = host(); resolveAll(pr('CONFLICTING'));
+  await h.harness.behavior.callRpc('subscribe', input);
+  await cycle(h, () => expect(h.harness.realtimeSignals.length).toBe(2));
+  resolveAll({ ...pr('CONFLICTING'), state: 'closed', mergeability: undefined }); await due(h);
+  await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(1));
+  expect(sentText(h)).toBe('[Subscription update] [o/r#1](https://github.com/o/r/pull/1): open → closed.');
+  resolveAll(pr('UNKNOWN')); await due(h);
+  await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(2));
+  expect(sentText(h, 1)).toContain('closed → open');
+  resolveAll(pr('CONFLICTING')); await due(h);
+  await cycle(h, () => expect(h.harness.inspection.sdk.callsTo('threads.send')).toHaveLength(3));
+  expect(sentText(h, 2)).toContain('merge conflicts detected');
 });
 it('preserves baseline on delivery failure and retries without losing the change', async () => {
   const h = host(); resolveAll(snapshot);
