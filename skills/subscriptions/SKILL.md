@@ -1,13 +1,13 @@
 ---
 name: subscriptions
-description: Follow GitHub pull requests and Linear issues from this thread; get a short message when one changes.
+description: Follow GitHub pull requests/issues and Linear issues from this thread; get a short message when one changes.
 ---
 
 # Subscriptions
 
 Use the `thread_subscriptions` tool (or `bb subscriptions`) when the user asks to follow, watch, subscribe to, or stop watching a PR or issue.
 
-- `platform` is `github` or `linear`. IDs: `owner/repo#123` (or a PR URL, or a bare number inside a project with a GitHub remote), `ENG-123` (or an issue URL). Up to 50 IDs per call, 100 per thread.
+- `platform` is `github` or `linear`. IDs: `owner/repo#123` (or a PR/issue URL, or a bare number inside a project with a GitHub remote), `ENG-123` (or an issue URL). GitHub resolves the number to either a PR or an issue; both URL forms use the same stored ID. Up to 50 IDs per call, 100 per thread.
 - Subscribing is idempotent. The first successful check is a silent baseline; later changes arrive as `[Subscription update] …` messages in this thread. Changes are coalesced: one message per thread covering everything since you last read one, so a message may list several items or several changes to one item.
 - `list` shows each item's last state or its current error. "waiting for first check" is normal for about a minute after subscribing.
 - Linear needs a personal API key in plugin settings (`bb plugin config subscriptions set linearApiKey …`). Only the **Read** permission is required. If every Linear item reports "API key not set" or "rejected", that setting is the fix; do not retry in a loop.

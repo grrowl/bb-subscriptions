@@ -42,7 +42,7 @@ export default function plugin(bb: BbPluginApi) {
 
   async function mutate(input: z.infer<typeof mutation>, add: boolean) {
     const config = await settings.get() as ProviderConfig;
-    // Bare PR numbers resolve against the thread's project remote unless a default repository is configured.
+    // Bare PR/issue numbers resolve against the thread's project remote unless a default repository is configured.
     const needsRemote = input.platform === 'github' && !config.githubRepository && input.ids.some(isBareNumber);
     const thread = add || needsRemote ? await bb.sdk.threads.get({ threadId: input.threadId }) : null;
     const repository = (config.githubRepository as string) || (needsRemote && thread?.projectId
