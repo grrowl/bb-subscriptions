@@ -36,7 +36,7 @@ it('links pending PRs and checked issues to their external pages', async () => {
 });
 it('opens the list and updates the elapsed check time every second', async () => {
   const { slot } = await setup([item('linear', 'ENG-1', Date.now() - 5000)]);
-  expect(screen.getByText('linear ENG-1')).toBeTruthy();
+  expect(screen.getByText('ENG-1')).toBeTruthy();
   expect(screen.getByText('checked: 5 seconds ago')).toBeTruthy();
   fireEvent.click(screen.getByText('1 following'));
   vi.useFakeTimers();
@@ -44,14 +44,14 @@ it('opens the list and updates the elapsed check time every second', async () =>
   act(() => { vi.advanceTimersByTime(2000); });
   expect(screen.getByText('checked: 7 seconds ago')).toBeTruthy();
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
-  expect(screen.queryByText('linear ENG-1')).toBeNull();
+  expect(screen.queryByText('ENG-1')).toBeNull();
   slot.lifecycle.unmount();
 });
 it('removes one subscription and then unsubscribes all remaining platforms', async () => {
   const { slot, unsubscribe } = await setup([item('linear', 'ENG-1'), item('linear', 'ENG-2'), item('github', 'org/repo#1')]);
   expect(screen.getByText('checked: pending')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Unsubscribe linear ENG-1' }));
-  await waitFor(() => expect(screen.queryByText('linear ENG-1')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('ENG-1')).toBeNull());
   expect(unsubscribe).toHaveBeenCalledWith({ threadId: 't1', platform: 'linear', ids: ['ENG-1'] });
   fireEvent.click(screen.getByText('unsubscribe all'));
   await waitFor(() => expect(screen.queryByText('2 following')).toBeNull());
@@ -63,6 +63,6 @@ it('keeps subscriptions visible and displays removal failures', async () => {
   const { slot } = await setup([item('linear', 'ENG-1')], true);
   fireEvent.click(screen.getByText('unsubscribe all'));
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Removal failed');
-  expect(screen.getByText('linear ENG-1')).toBeTruthy();
+  expect(screen.getByText('ENG-1')).toBeTruthy();
   slot.lifecycle.unmount();
 });

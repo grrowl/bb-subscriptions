@@ -64,8 +64,14 @@ function SubscriptionCount({ threadId }: { threadId: string }) {
           {items.map(item => <li key={`${item.platform}:${item.id}`} className="flex items-center gap-2 rounded px-2 py-2 text-xs">
             <div className="min-w-0 flex-1">
               {subscriptionUrl(item)
-                ? <a href={subscriptionUrl(item)} target="_blank" rel="noopener noreferrer" className="block truncate hover:underline focus-visible:underline" title={item.snapshot?.title ?? item.id}>{item.platform} {item.id}</a>
-                : <div className="truncate" title={item.snapshot?.title ?? item.id}>{item.platform} {item.id}</div>}
+                ? <a href={subscriptionUrl(item)} target="_blank" rel="noopener noreferrer" aria-label={`${item.platform} ${item.id}`} className="flex min-w-0 items-baseline hover:underline focus-visible:underline" title={item.snapshot?.title ?? item.id}>
+                    <span className="shrink-0">{item.platform}&nbsp;</span>
+                    <span dir="rtl" className="min-w-0 truncate text-left"><bdi dir="ltr">{item.id}</bdi></span>
+                  </a>
+                : <div className="flex min-w-0 items-baseline" title={item.snapshot?.title ?? item.id}>
+                    <span className="shrink-0">{item.platform}&nbsp;</span>
+                    <span dir="rtl" className="min-w-0 truncate text-left"><bdi dir="ltr">{item.id}</bdi></span>
+                  </div>}
               <div className="truncate text-muted-foreground" title={item.error ?? item.snapshot?.state ?? 'pending'}>{item.error ?? item.snapshot?.state ?? 'pending'}</div>
             </div>
             <button type="button" disabled={busy} aria-label={`Unsubscribe ${item.platform} ${item.id}`} onClick={() => void unsubscribe([item])} className="shrink-0 rounded px-1.5 py-1 text-muted-foreground hover:bg-muted disabled:opacity-50">×</button>
