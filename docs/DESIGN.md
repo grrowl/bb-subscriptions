@@ -116,6 +116,22 @@ far more commonly installed than `linear` and its auth story is better.
 Keeping `gh` for now and going direct for Linear is a reasonable asymmetry as
 long as the provider interface (below) hides it.
 
+PR polling requests `mergeable` on every due check. GitHub's
+[PullRequest.mergeable and MergeableState](https://docs.github.com/en/graphql/reference/pulls)
+describe merge conflicts independently of checks, reviews and branch protection:
+`CONFLICTING` means conflicts, `MERGEABLE` means no conflicts, and `UNKNOWN`
+means calculation is pending. Base-branch changes can affect this result even
+when the PR head and `updatedAt` have not changed.
+
+Snapshots store an optional `mergeability` observation for open/draft PRs.
+Older persisted snapshots remain valid without a database migration. The
+watcher retains the last known result through `UNKNOWN`, including across
+reloads, and checks again at the normal interval while processing other fields.
+An initial clean observation is silent; discovering a conflict after an unknown
+or legacy baseline sends “merge conflicts detected”. A known conflict becoming
+mergeable sends “merge conflicts resolved”. Closed/merged PRs omit mergeability,
+so closing a conflicted PR does not imply resolution.
+
 ## 3. Making it provider-plugin shaped
 
 Today `providers.ts` is one `fetchSnapshot(platform, …)` with `if (platform
@@ -174,9 +190,10 @@ free text), or the frontend.
 
 ### Things to keep in mind
 
-- **Snapshot stays generic.** `fields: Record<string,string>` is what makes
-  `describe()` provider-agnostic. Providers should map into it rather than
-  extend it.
+- **Snapshot fields stay generic.** `fields: Record<string,string>` holds
+  ordinary provider details. Optional `mergeability` has explicit handling
+  because unknown observations must preserve the last known result and queued
+  conflict warnings must reflect resolution.
 - **Settings namespacing.** Prefix provider settings (`linearApiKey`,
   `githubRepository`) to avoid collisions; the registry can enforce it.
 - **Schema drift.** Keep provider zod schemas next to the query in the same
@@ -209,6 +226,10 @@ them queued back-to-back while the agent was busy, two of them bare
   place. `message.dispatched` and `message.cancelled` clear the bookkeeping
   so the next change starts from a fresh baseline. A failed update (row gone
   or edited) falls back to a normal send.
+- For queued messages, a new known mergeability transition advances only that
+  item's mergeability baseline. A resolved conflict therefore replaces a queued
+  warning with its resolution even when the PR returns to the original clean
+  state; other fields retain their oldest unseen baseline.
 - Thread-busy detection is bb's: `queue-if-active` decides. The plugin never
   inspects thread status.
 

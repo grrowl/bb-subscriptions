@@ -161,10 +161,14 @@ export default function plugin(bb: BbPluginApi) {
    * Note a change for the thread's next message, keeping the oldest unseen baseline per item.
    * The debounce only delays a brand-new message; a message already waiting in the queue is rewritten on the next sweep.
    */
-  function record(thread: string, key: string, before: Snapshot, debounce: number) {
+  function record(thread: string, key: string, before: Snapshot, after: Snapshot, debounce: number) {
     const pending = db.prepare('SELECT * FROM pending WHERE thread=?').get(thread) as Pending | undefined;
     const baselines: Record<string, Snapshot> = pending ? JSON.parse(pending.baselines) : {};
     baselines[key] ??= before;
+    // A queued conflict warning must become a resolution even if the PR returns to its original baseline.
+    if (pending?.queued_id && before.mergeability !== after.mergeability && (after.mergeability === 'MERGEABLE' || after.mergeability === 'CONFLICTING')) {
+      baselines[key] = { ...baselines[key], mergeability: before.mergeability };
+    }
     if (!pending) db.prepare('INSERT INTO pending (thread,baselines,flush_at,dirty) VALUES (?,?,?,1)').run(thread, JSON.stringify(baselines), Date.now() + debounce);
     else db.prepare('UPDATE pending SET baselines=?, dirty=1, flush_at=CASE WHEN dirty=1 THEN flush_at WHEN queued_id IS NOT NULL THEN ? ELSE ? END WHERE thread=?').run(JSON.stringify(baselines), Date.now(), Date.now() + debounce, thread);
   }
@@ -214,7 +218,11 @@ export default function plugin(bb: BbPluginApi) {
         if (outcome instanceof ProviderError) throw outcome;
         const snapshot = snapshotSchema.parse(outcome);
         const before = current.snapshot ? snapshotSchema.parse(JSON.parse(current.snapshot)) : null;
-        if (before && describe(row.id, before, snapshot)) record(row.thread, `${row.platform}:${row.id}`, before, debounce);
+        // GitHub computes mergeability asynchronously. Keep the last known result until it finishes.
+        if (snapshot.mergeability === 'UNKNOWN' && (before?.state === 'open' || before?.state === 'draft') && before.mergeability) {
+          snapshot.mergeability = before.mergeability;
+        }
+        if (before && describe(row.id, before, snapshot)) record(row.thread, `${row.platform}:${row.id}`, before, snapshot, debounce);
         db.prepare('UPDATE subscriptions SET snapshot=?,error=NULL,checked=?,due=?,failures=0 WHERE thread=? AND platform=? AND id=?').run(JSON.stringify(snapshot), Date.now(), Date.now() + interval, row.thread, row.platform, row.id);
       } catch (cause) {
         const delay = cause instanceof ProviderError ? cause.retryMs : 60_000;

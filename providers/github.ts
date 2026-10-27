@@ -7,7 +7,7 @@ const exec = promisify(execFile);
 
 export const githubQuery = `query SubscriptionPR($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
-    title state isDraft updatedAt headRefOid reviewDecision
+    title state isDraft updatedAt headRefOid reviewDecision mergeable
     assignees(first: 50) { nodes { login } }
     labels(first: 100) { nodes { name } }
     comments(last: 1) { totalCount nodes { updatedAt author { login } } }
@@ -17,6 +17,7 @@ export const githubQuery = `query SubscriptionPR($owner: String!, $repo: String!
 }`;
 const prSchema = z.object({
   title: z.string(), state: z.string(), isDraft: z.boolean(), updatedAt: z.string(), headRefOid: z.string(), reviewDecision: z.string().nullable(),
+  mergeable: z.enum(['MERGEABLE', 'CONFLICTING', 'UNKNOWN']),
   assignees: z.object({ nodes: z.array(z.object({ login: z.string() })) }),
   labels: z.object({ nodes: z.array(z.object({ name: z.string() })) }),
   comments: z.object({ totalCount: z.number(), nodes: z.array(z.object({ updatedAt: z.string(), author: z.object({ login: z.string() }).nullable() })) }),
@@ -40,6 +41,7 @@ export function toSnapshot(id: string, pr: z.infer<typeof prSchema>): Snapshot {
   return {
     title: pr.title, url: `https://github.com/${repo}/pull/${number}`, updatedAt: pr.updatedAt,
     state: pr.state === 'OPEN' && pr.isDraft ? 'draft' : pr.state.toLowerCase(),
+    mergeability: pr.state === 'OPEN' ? pr.mergeable : undefined,
     fields: {
       commit: pr.headRefOid.slice(0, 12),
       comments: `${pr.comments.totalCount}${comment ? ` (latest by ${comment.author?.login ?? 'unknown'} at ${comment.updatedAt})` : ''}`,
