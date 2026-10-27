@@ -12,6 +12,14 @@ it.skipIf(!process.env.SUBSCRIPTIONS_LIVE)('reads a real GitHub PR through gh wi
   const { items } = await fetchBatch('github', [id], { config: {}, signal: signal() });
   expect((items.get(id) as any).state).toBeTruthy();
 }, 60_000);
+it.skipIf(!process.env.SUBSCRIPTIONS_LIVE)('reads a real GitHub issue through gh with its canonical issue URL', async () => {
+  const { stdout } = await exec('gh', ['search', 'issues', '--repo', 'cli/cli', '--limit', '1', '--json', 'number,url']);
+  const issue = JSON.parse(stdout)[0];
+  expect(issue).toBeTruthy();
+  const id = `cli/cli#${issue.number}`;
+  const { items } = await fetchBatch('github', [id], { config: {}, signal: signal() });
+  expect(items.get(id)).toMatchObject({ url: issue.url, state: expect.stringMatching(/^(open|closed)$/), fields: { comments: expect.any(String) } });
+}, 60_000);
 it.skipIf(!process.env.SUBSCRIPTIONS_LIVE || !process.env.LINEAR_API_KEY)('reads a real Linear issue through the API with a read-only key', async () => {
   const key = process.env.LINEAR_API_KEY!;
   const res = await fetch('https://api.linear.app/graphql', { method: 'POST', headers: { 'content-type': 'application/json', authorization: key }, body: JSON.stringify({ query: '{ issues(first: 1) { nodes { identifier } } }' }) });

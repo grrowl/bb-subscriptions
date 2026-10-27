@@ -186,8 +186,15 @@ free text), or the frontend.
   Today the pause is per subscription row, so a rate-limited provider keeps
   getting hit by every other row until each one fails individually.
 
-Candidate next providers with cheap read-only tokens: GitHub Issues (same
-query shape as PRs), GitLab MRs, Jira Cloud (basic auth with API token),
+GitHub PRs and issues share the `github` provider. [`Repository.issueOrPullRequest`](https://docs.github.com/en/graphql/reference/repos#repository)
+returns an [`IssueOrPullRequest` union](https://docs.github.com/en/graphql/reference/issues#issueorpullrequest);
+`__typename` selects the matching schema and snapshot fields. URLs for either
+type normalize to the existing `owner/repo#number` key, preserving persisted PR
+subscriptions without a database migration. Bare numbers use the same repository
+inference for both types. Snapshot URLs come from GitHub. Issues track state,
+state reason, title, assignees, labels and the latest comment; PR fields stay unchanged.
+
+Candidate next providers with cheap read-only tokens: GitLab MRs, Jira Cloud (basic auth with API token),
 Notion pages, Vercel deployments.
 
 ## 3b. Delivery: one live message per thread

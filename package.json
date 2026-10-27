@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Subscriptions",
-    "description": "Follow GitHub PRs and Linear issues with per-thread subscriptions and concise update messages. Linear needs only a read-only API key.",
+    "description": "Follow GitHub PRs/issues and Linear issues with per-thread subscriptions and concise update messages. Linear needs only a read-only API key.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

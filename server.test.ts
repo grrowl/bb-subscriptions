@@ -26,6 +26,7 @@ afterEach(async () => { for (const h of hosts.splice(0)) await h.harness.lifecyc
 describe('IDs and summaries', () => {
   it('normalizes URLs, defaults and provider casing', () => {
     expect(canonical('github', 'https://github.com/O/R/pull/12/files')).toBe('o/r#12');
+    expect(canonical('github', 'https://github.com/O/R/issues/12#issuecomment-1')).toBe('o/r#12');
     expect(canonical('github', '12', 'O/R')).toBe('o/r#12');
     expect(canonical('linear', 'https://linear.app/acme/issue/eng-12/title')).toBe('ENG-12');
     expect(githubRepositoryFromRemote('git@github.com:Levercon/stage-1.git')).toBe('levercon/stage-1');

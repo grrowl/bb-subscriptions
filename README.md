@@ -1,16 +1,19 @@
 # Subscriptions for bb
 
-A small bb plugin that follows GitHub PRs and Linear issues for a thread. GitHub is read through your existing authenticated `gh` CLI; Linear is read directly from its API with a **read-only** personal key. It stores the last observed state and sends a short thread message when something changes. An idle thread wakes; a busy thread gets a queued message.
+A small bb plugin that follows GitHub PRs/issues and Linear issues for a thread. GitHub is read through your existing authenticated `gh` CLI; Linear is read directly from its API with a **read-only** personal key. It stores the last observed state and sends a short thread message when something changes. An idle thread wakes; a busy thread gets a queued message.
 
 ```sh
 bb subscriptions subscribe github owner/repo#123 owner/repo#124
+bb subscriptions subscribe github https://github.com/owner/repo/issues/125
 bb subscriptions subscribe linear ENG-123 ENG-124
 bb subscriptions unsubscribe github owner/repo#123
 bb subscriptions unsub linear ENG-123 ENG-124
 bb subscriptions list --json
 ```
 
-`sub` / `unsub` are aliases. IDs can be separated by spaces or commas; PR and Linear issue URLs also work. Bulk commands accept up to 50 IDs for one platform and are validated before any subscription changes. Subscriptions are per thread, idempotent, and capped at 100 per thread. Outside a thread, pass `--thread <thread-id>`.
+`github` follows both PRs and issues: GitHub resolves `owner/repo#number` or bare numbers to the actual item type. PR and issue URLs normalize to the same stored ID; notifications link to the canonical URL returned by GitHub. Existing PR subscriptions retain their IDs and baselines.
+
+`sub` / `unsub` are aliases. IDs can be separated by spaces or commas; GitHub PR/issue and Linear issue URLs also work. Bulk commands accept up to 50 IDs for one platform and are validated before any subscription changes. Subscriptions are per thread, idempotent, and capped at 100 per thread. Outside a thread, pass `--thread <thread-id>`.
 
 Agents can use the `thread_subscriptions` tool, with `action`, `platform`, and `ids`. This makes requests such as “subscribe linear ENG-123 ENG-124” work through the agent. The generated bb command help also exposes the CLI. The plugin adds no management panel: just a small “N following” count in the thread heading, with current states or errors on hover. The count is hidden when empty.
 
@@ -43,7 +46,7 @@ The key is stored as a plugin secret (a 0600 file under the plugin data director
 Optional settings:
 
 ```sh
-# Enables bare PR numbers outside a project thread, e.g. subscribe github 123 124.
+# Enables bare PR/issue numbers outside a project thread, e.g. subscribe github 123 124.
 # In a project thread, this is inferred from its GitHub remote automatically.
 bb plugin config subscriptions set githubRepository owner/repo
 bb plugin config subscriptions set intervalSeconds 60
@@ -54,7 +57,8 @@ bb plugin config subscriptions set debounceSeconds 10
 ## Behavior
 
 - Checks due items every five seconds, with a default per-item interval of 60 seconds (configurable 30–3600). First successful read establishes a silent baseline. `list` shows pending/error until it succeeds.
-- GitHub: open/draft/closed/merged, commit, review decision, latest review, check rollup, assignees, labels and comments.
+- GitHub PRs: open/draft/closed/merged, commit, review decision, latest review, check rollup, assignees, labels and comments.
+- GitHub issues: open/closed (including reopening), state reason (completed/not planned), title, assignees, labels and comments with the latest author and timestamp.
 - Linear: status, assignee, priority, labels and latest comment. A changed update timestamp without a specific field difference produces “updated”.
 - Example: `[Subscription update] [owner/repo#123](https://github.com/owner/repo/pull/123): open → merged; checks: pending → success.` Several items changing together become one bulleted message.
 - **One message per thread, never a stack.** A brand-new message is held for `debounceSeconds` so changes arriving together go out as one. If the thread is busy, bb queues the message and the plugin remembers it; any further change rewrites that same queued message straight away (no debounce) with the full diff since the agent last looked, so an idle agent always reads one current summary rather than several stale ones. Once the message is read (or removed from the queue), the next change starts a new one.
@@ -63,7 +67,7 @@ bb plugin config subscriptions set debounceSeconds 10
 - Lookups are shared for identical items in each sweep, and each thread is looked up once per sweep. Delivery is serialized against unsubscribe and checks subscription identity after fetching, so removing a subscription prevents a stale lookup from sending.
 - SQLite state survives reload/restart. Archived threads pause checks; deleted threads lose their subscriptions. Subscriptions remain after a PR merges or issue completes, so reopening is observable.
 
-This is polling of **observed state**, not a complete event log: intermediate transitions between checks, older comment edits, and changes made and reverted while bb is offline may not be reported. Label lists are bounded to 100, PR assignees to 50. Checks run only while bb is running and the plugin is enabled. Heavy subscription loads or provider failures delay delivery. A crash between accepting a thread message and persisting its snapshot can produce a duplicate on retry; the current SDK send operation has no idempotency key.
+This is polling of **observed state**, not a complete event log: intermediate transitions between checks, older comment edits, and changes made and reverted while bb is offline may not be reported. Label lists are bounded to 100, GitHub assignees to 50. Checks run only while bb is running and the plugin is enabled. Heavy subscription loads or provider failures delay delivery. A crash between accepting a thread message and persisting its snapshot can produce a duplicate on retry; the current SDK send operation has no idempotency key.
 
 ## Development
 
@@ -78,7 +82,7 @@ SUBSCRIPTIONS_LIVE=1 LINEAR_API_KEY=lin_api_… npm test -- providers.live.test.
 
 If every server test fails with "Could not locate the bindings file", `npm ci` did not fetch a `better-sqlite3` binary for your Node version. Run `npx prebuild-install` inside `node_modules/better-sqlite3` (or `npm rebuild better-sqlite3`) once.
 
-Tests cover bulk/scoped commands, normalization, silent baselines, change delivery, failed-send retry, unsubscribe races, batched lookups, provider pauses, Linear request shape and rate-limit handling, archived/deleted threads, reload persistence, backoff, public SDK imports, and the heading count. The opt-in live tests read one PR authored by the current GitHub account and one accessible Linear issue; they change neither provider nor thread state.
+Tests cover bulk/scoped commands, normalization, silent baselines, change delivery, failed-send retry, unsubscribe races, batched lookups, provider pauses, Linear request shape and rate-limit handling, archived/deleted threads, reload persistence, backoff, public SDK imports, and the heading count. The opt-in live tests read one PR authored by the current GitHub account, one public GitHub issue, and one accessible Linear issue; they change neither provider nor thread state.
 
 ### Adding a service
 
