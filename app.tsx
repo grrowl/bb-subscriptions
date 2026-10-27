@@ -3,6 +3,11 @@ import * as Popover from '@radix-ui/react-popover';
 import { definePluginApp, useRealtime, useRealtimeConnectionState, useRpc } from '@get-bb/plugin-sdk/app';
 import type { rpcContract } from './server';
 import type { Subscription } from './model';
+function subscriptionUrl(item: Subscription): string | undefined {
+  const url = item.snapshot?.url ?? (item.platform === 'github'
+    ? `https://github.com/${item.id.replace('#', '/pull/')}` : undefined);
+  return url && /^https?:\/\//i.test(url) ? url : undefined;
+}
 function SubscriptionCount({ threadId }: { threadId: string }) {
   const rpc = useRpc<typeof rpcContract>();
   const [items, setItems] = useState<Subscription[]>([]);
@@ -58,7 +63,9 @@ function SubscriptionCount({ threadId }: { threadId: string }) {
         <ul className="max-h-72 overflow-y-auto p-1">
           {items.map(item => <li key={`${item.platform}:${item.id}`} className="flex items-center gap-2 rounded px-2 py-2 text-xs">
             <div className="min-w-0 flex-1">
-              <div className="truncate" title={item.snapshot?.title ?? item.id}>{item.platform} {item.id}</div>
+              {subscriptionUrl(item)
+                ? <a href={subscriptionUrl(item)} target="_blank" rel="noopener noreferrer" className="block truncate hover:underline focus-visible:underline" title={item.snapshot?.title ?? item.id}>{item.platform} {item.id}</a>
+                : <div className="truncate" title={item.snapshot?.title ?? item.id}>{item.platform} {item.id}</div>}
               <div className="truncate text-muted-foreground" title={item.error ?? item.snapshot?.state ?? 'pending'}>{item.error ?? item.snapshot?.state ?? 'pending'}</div>
             </div>
             <button type="button" disabled={busy} aria-label={`Unsubscribe ${item.platform} ${item.id}`} onClick={() => void unsubscribe([item])} className="shrink-0 rounded px-1.5 py-1 text-muted-foreground hover:bg-muted disabled:opacity-50">×</button>

@@ -22,6 +22,18 @@ async function setup(initial: Subscription[], fail = false) {
   return { slot, unsubscribe };
 }
 const item = (platform: string, id: string, checkedAt: number | null = null): Subscription => ({ platform, id, snapshot: null, error: null, checkedAt });
+it('links pending PRs and checked issues to their external pages', async () => {
+  const issue = item('linear', 'ENG-1');
+  issue.snapshot = { title: 'An issue', url: 'https://linear.app/acme/issue/ENG-1/an-issue', state: 'Todo', updatedAt: '', fields: {} };
+  const { slot, unsubscribe } = await setup([item('github', 'org/repo#42'), issue]);
+  const pr = screen.getByRole('link', { name: 'github org/repo#42' });
+  expect(pr.getAttribute('href')).toBe('https://github.com/org/repo/pull/42');
+  expect(pr.getAttribute('target')).toBe('_blank');
+  expect(pr.getAttribute('rel')).toBe('noopener noreferrer');
+  expect(screen.getByRole('link', { name: 'linear ENG-1' }).getAttribute('href')).toBe(issue.snapshot.url);
+  expect(unsubscribe).not.toHaveBeenCalled();
+  slot.lifecycle.unmount();
+});
 it('opens the list and updates the elapsed check time every second', async () => {
   const { slot } = await setup([item('linear', 'ENG-1', Date.now() - 5000)]);
   expect(screen.getByText('linear ENG-1')).toBeTruthy();
